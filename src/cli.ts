@@ -17,7 +17,7 @@ async function main() {
   const session = await resolveRace(query, year);
   log(`Fetching ${session.circuit_short_name} ${session.year} (session ${session.session_key})...`);
   const race = await loadRace(session);
-  for (const warning of raceWarnings(race.raceControl)) console.error(`Warning: ${warning}`);
+  for (const warning of raceWarnings(race.raceControl, race.laps)) console.error(`Warning: ${warning}`);
   printBattles(session, findBattles(race).slice(0, top), race.drivers);
 }
 

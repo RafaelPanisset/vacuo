@@ -25,7 +25,7 @@ async function main() {
   const session = await resolveRace(query, year);
   log(`Fetching ${session.circuit_short_name} ${session.year} (session ${session.session_key})...`);
   const race = await loadRace(session);
-  for (const warning of raceWarnings(race.raceControl)) log(`Warning: ${warning}`);
+  for (const warning of raceWarnings(race.raceControl, race.laps)) log(`Warning: ${warning}`);
   const battles = findBattles(race);
   const battle = battles[rank - 1];
   if (!battle) throw new Error(`Found ${battles.length} battles; pick --battle between 1 and ${battles.length}.`);

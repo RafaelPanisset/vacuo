@@ -36,12 +36,20 @@ function race({ fromS = 0, toS, gap = 0.5, gapAt = () => gap, raceControl = [] a
   };
 }
 
-const message = (seconds: number, text: string) => ({
+const message = (seconds: number, text: string, lap: number | null = null) => ({
   date: at(seconds),
   category: "Other",
   flag: null,
   message: text,
-  lap_number: null,
+  lap_number: lap,
+});
+
+/** The leader starting `lap` at `seconds` (other cars start it a little later). */
+const lapStart = (seconds: number, lap: number, driver = 99) => ({
+  driver_number: driver,
+  lap_number: lap,
+  date_start: at(seconds),
+  lap_duration: 90,
 });
 
 describe("findBattles", () => {
@@ -106,6 +114,29 @@ describe("findBattles", () => {
     assert.deepEqual(findBattles(data), []);
   });
 
+  it("keeps racing on the final lap after the leader has taken the flag", () => {
+    // BEHIND passes AHEAD at 160s, ten seconds after the leader's chequered flag.
+    const data = race({ toS: 200, raceControl: [message(-60, "OVERTAKE ENABLED"), message(150, "CHEQUERED FLAG")] });
+    data.positions.push(
+      { date: at(160), driver_number: BEHIND, position: 1 },
+      { date: at(160), driver_number: AHEAD, position: 2 },
+    );
+    data.intervals = data.intervals.filter((i) => Date.parse(i.date) < T0 + 160_000);
+    for (let s = 160; s <= 200; s += 4) {
+      data.intervals.push({ date: at(s), driver_number: AHEAD, interval: 0.4, gap_to_leader: 0.4 });
+    }
+
+    const [battle] = findBattles(data);
+    assert.equal(battle.swaps, 1);
+  });
+
+  it("stops counting a car once it has crossed the finish line", () => {
+    // BEHIND's lap 2 runs from 80s to 170s: that is when it takes the flag.
+    const data = race({ toS: 300, raceControl: [message(-60, "OVERTAKE ENABLED"), message(150, "CHEQUERED FLAG")] });
+    const [battle] = findBattles(data);
+    assert.equal(battle.end, T0 + 168_000);
+  });
+
   it("does not count a pit stop as a battle", () => {
     const data = race({ toS: 200 });
     data.pits.push({ date: at(0), driver_number: BEHIND, lap_number: 1, lane_duration: 200 });
@@ -152,13 +183,21 @@ describe("neutralisedWindows", () => {
     assert.deepEqual(windows, [{ from: -Infinity, to: T0 }]);
   });
 
-  it("treats the race as over after the chequered flag, whatever comes next", () => {
+  it("ignores race control messages after the chequered flag", () => {
     const windows = neutralisedWindows([
       message(0, "OVERTAKE ENABLED"),
       message(100, "CHEQUERED FLAG"),
-      message(200, "OVERTAKE ENABLED"),
+      message(200, "SAFETY CAR DEPLOYED"),
     ]);
-    assert.deepEqual(windows.at(-1), { from: T0 + 100_000, to: Infinity });
+    assert.deepEqual(windows, [{ from: -Infinity, to: T0 }]);
+  });
+
+  it("ignores stewards' notes that mention a red flag", () => {
+    const windows = neutralisedWindows([
+      message(0, "OVERTAKE ENABLED"),
+      message(1200, "FIA STEWARDS: INCIDENT INVOLVING CAR 1 (VER) NOTED - OVERTAKING UNDER RED FLAG"),
+    ]);
+    assert.deepEqual(windows, [{ from: -Infinity, to: T0 }]);
   });
 
   it("still neutralises the race on a red flag", () => {
@@ -170,18 +209,48 @@ describe("neutralisedWindows", () => {
     assert.deepEqual(windows.at(-1), { from: T0 + 100_000, to: T0 + 900_000 });
   });
 
-  it("ends a safety car period after the safety car comes in, even if overtaking is never re-enabled", () => {
-    const windows = neutralisedWindows([
-      message(0, "OVERTAKE ENABLED"),
-      message(100, "SAFETY CAR DEPLOYED"),
-      message(400, "SAFETY CAR IN THIS LAP"),
-      message(3000, "CHEQUERED FLAG"),
-    ]);
+  it("restarts the race when the leader starts the next lap if overtaking is never re-enabled", () => {
+    const windows = neutralisedWindows(
+      [
+        message(0, "OVERTAKE ENABLED"),
+        message(100, "SAFETY CAR DEPLOYED", 2),
+        message(400, "SAFETY CAR IN THIS LAP", 5),
+        message(3000, "CHEQUERED FLAG", 30),
+      ],
+      [lapStart(560, 6), lapStart(563, 6, 98)],
+    );
     assert.deepEqual(windows, [
       { from: -Infinity, to: T0 },
-      // Racing restarts when the leader next crosses the line: allow up to two minutes.
-      { from: T0 + 100_000, to: T0 + 520_000 },
-      { from: T0 + 3_000_000, to: Infinity },
+      { from: T0 + 100_000, to: T0 + 560_000 },
+    ]);
+  });
+
+  it("falls back to three minutes after the safety car comes in when lap times are missing", () => {
+    const windows = neutralisedWindows([
+      message(0, "OVERTAKE ENABLED"),
+      message(100, "SAFETY CAR DEPLOYED", 2),
+      message(400, "SAFETY CAR IN THIS LAP", 5),
+      message(3000, "CHEQUERED FLAG", 30),
+    ]);
+    assert.deepEqual(windows.at(-1), { from: T0 + 100_000, to: T0 + 580_000 });
+  });
+
+  it("keeps the racing between two safety cars when overtaking is never re-enabled", () => {
+    const windows = neutralisedWindows(
+      [
+        message(0, "OVERTAKE ENABLED"),
+        message(100, "SAFETY CAR DEPLOYED", 2),
+        message(400, "SAFETY CAR IN THIS LAP", 5),
+        message(2000, "SAFETY CAR DEPLOYED", 22),
+        message(2300, "SAFETY CAR IN THIS LAP", 25),
+        message(3600, "CHEQUERED FLAG", 40),
+      ],
+      [lapStart(560, 6), lapStart(2460, 26)],
+    );
+    assert.deepEqual(windows, [
+      { from: -Infinity, to: T0 },
+      { from: T0 + 100_000, to: T0 + 560_000 },
+      { from: T0 + 2_000_000, to: T0 + 2_460_000 },
     ]);
   });
 
