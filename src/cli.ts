@@ -7,6 +7,7 @@ const USAGE = `usage: npm run battles -- [latest | <circuit, city or country> | 
   npm run battles                 latest finished race
   npm run battles -- monza        Monza, this year
   npm run battles -- interlagos 2025
+  npm run battles -- las vegas 2023
   npm run battles -- 11361 --top 5`;
 
 async function main() {

@@ -58,7 +58,7 @@ export async function loadRace(session: Session): Promise<Race> {
   return race;
 }
 
-/** Parses `[race] [year] [--flag value ...]` arguments shared by the CLIs. */
+/** Parses `[race words...] [year] [--flag value ...]` arguments shared by the CLIs. */
 export function parseArgs<F extends Record<string, number>>(argv: string[], flags: F): F & { query: string; year: number } {
   const args = [...argv];
   const values: Record<string, number> = { ...flags };
@@ -66,8 +66,11 @@ export function parseArgs<F extends Record<string, number>>(argv: string[], flag
     const i = args.indexOf(`--${flag}`);
     if (i >= 0) values[flag] = Number(args.splice(i, 2)[1]);
   }
-  const [query = "latest", year = String(new Date().getFullYear())] = args;
-  return { ...(values as F), query, year: Number(year) };
+  // The last word is the year when it looks like one; OpenF1 session keys are never in the 2000s.
+  const year = /^20\d\d$/.test(args.at(-1) ?? "") ? Number(args.pop()) : new Date().getFullYear();
+  // Everything else is the race, so names like "las vegas" or "abu dhabi" work unquoted.
+  const query = args.join(" ") || "latest";
+  return { ...(values as F), query, year };
 }
 
 function normalise(text: string): string {
