@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
-import { findBattles } from "./battles.ts";
+import { findBattles, raceWarnings } from "./battles.ts";
 import { prepareClip } from "./clip.ts";
 import { loadRace, parseArgs, resolveRace } from "./race.ts";
 
@@ -25,6 +25,7 @@ async function main() {
   const session = await resolveRace(query, year);
   log(`Fetching ${session.circuit_short_name} ${session.year} (session ${session.session_key})...`);
   const race = await loadRace(session);
+  for (const warning of raceWarnings(race.raceControl)) log(`Warning: ${warning}`);
   const battles = findBattles(race);
   const battle = battles[rank - 1];
   if (!battle) throw new Error(`Found ${battles.length} battles; pick --battle between 1 and ${battles.length}.`);

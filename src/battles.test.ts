@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { findBattles, neutralisedWindows, type RaceData } from "./battles.ts";
+import { adjacentSamples, findBattles, neutralisedWindows, raceWarnings, type RaceData } from "./battles.ts";
 
 const T0 = Date.parse("2026-09-06T13:00:00Z");
 const at = (seconds: number) => new Date(T0 + seconds * 1000).toISOString();
@@ -135,5 +135,107 @@ describe("neutralisedWindows", () => {
     ]);
     assert.equal(windows.length, 2);
     assert.equal(windows[1].to, T0 + 215_000);
+  });
+
+  // Real messages from Interlagos 2025, where DRS zone 2 was tested ten minutes before the start.
+  it("does not end the opening neutral period when DRS is tested in a single zone", () => {
+    const windows = neutralisedWindows([
+      message(-600, "DRS DISABLED IN ZONE 2"),
+      message(-598, "DRS ENABLED IN ZONE 2"),
+      message(100, "DRS ENABLED"),
+    ]);
+    assert.deepEqual(windows, [{ from: -Infinity, to: T0 + 100_000 }]);
+  });
+
+  it("does not neutralise the race when DRS is disabled in a single zone", () => {
+    const windows = neutralisedWindows([message(0, "DRS ENABLED"), message(200, "DRS DISABLED IN ZONE 1")]);
+    assert.deepEqual(windows, [{ from: -Infinity, to: T0 }]);
+  });
+
+  it("treats the race as over after the chequered flag, whatever comes next", () => {
+    const windows = neutralisedWindows([
+      message(0, "OVERTAKE ENABLED"),
+      message(100, "CHEQUERED FLAG"),
+      message(200, "OVERTAKE ENABLED"),
+    ]);
+    assert.deepEqual(windows.at(-1), { from: T0 + 100_000, to: Infinity });
+  });
+
+  it("still neutralises the race on a red flag", () => {
+    const windows = neutralisedWindows([
+      message(0, "OVERTAKE ENABLED"),
+      message(100, "RED FLAG - RACE SUSPENDED"),
+      message(900, "OVERTAKE ENABLED"),
+    ]);
+    assert.deepEqual(windows.at(-1), { from: T0 + 100_000, to: T0 + 900_000 });
+  });
+
+  it("ends a safety car period after the safety car comes in, even if overtaking is never re-enabled", () => {
+    const windows = neutralisedWindows([
+      message(0, "OVERTAKE ENABLED"),
+      message(100, "SAFETY CAR DEPLOYED"),
+      message(400, "SAFETY CAR IN THIS LAP"),
+      message(3000, "CHEQUERED FLAG"),
+    ]);
+    assert.deepEqual(windows, [
+      { from: -Infinity, to: T0 },
+      // Racing restarts when the leader next crosses the line: allow up to two minutes.
+      { from: T0 + 100_000, to: T0 + 520_000 },
+      { from: T0 + 3_000_000, to: Infinity },
+    ]);
+  });
+
+  it("keeps the race neutralised to the end when it finishes behind the safety car", () => {
+    const windows = neutralisedWindows([
+      message(0, "OVERTAKE ENABLED"),
+      message(2800, "SAFETY CAR DEPLOYED"),
+      message(3000, "CHEQUERED FLAG"),
+    ]);
+    assert.deepEqual(windows.at(-1), { from: T0 + 2_800_000, to: Infinity });
+  });
+});
+
+describe("adjacentSamples", () => {
+  it("skips a car's gap while its own position update is still on the way", () => {
+    const [A, B, C] = [1, 2, 3];
+    const data: RaceData = {
+      positions: [
+        { date: at(-10), driver_number: C, position: 3 },
+        { date: at(-10), driver_number: A, position: 4 },
+        { date: at(-10), driver_number: B, position: 5 },
+        // B passes A, but A's own update arrives ten seconds after B's.
+        { date: at(10), driver_number: B, position: 4 },
+        { date: at(20), driver_number: A, position: 5 },
+      ],
+      // At 15s A's gap is really to B, which the stale positions would pair with C.
+      intervals: [{ date: at(15), driver_number: A, interval: 0.4, gap_to_leader: 12 }],
+      laps: [],
+      raceControl: [],
+      pits: [],
+    };
+    assert.deepEqual(adjacentSamples(data), []);
+  });
+});
+
+describe("raceWarnings", () => {
+  it("warns when the race stays neutralised long before the finish, so later battles are missing", () => {
+    const warnings = raceWarnings([
+      message(0, "OVERTAKE ENABLED"),
+      message(600, "RED FLAG - RACE SUSPENDED"),
+      message(3600, "CHEQUERED FLAG"),
+    ]);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /13:10 UTC/);
+  });
+
+  it("does not warn when the race just finishes behind the safety car", () => {
+    const warnings = raceWarnings([
+      message(0, "OVERTAKE ENABLED"),
+      message(3400, "SAFETY CAR DEPLOYED"),
+      message(3600, "CHEQUERED FLAG"),
+      // Stewards keep posting after the flag; that is not neutralised racing.
+      message(4800, "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 11"),
+    ]);
+    assert.deepEqual(warnings, []);
   });
 });

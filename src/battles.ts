@@ -59,12 +59,19 @@ export type PairSample = {
 
 // Overtaking is switched off (DRS before 2026, overtake mode from 2026) whenever
 // the race is neutralised, so these messages bracket the periods of real racing.
-const OVERTAKING_ENABLED = /\b(DRS|OVERTAKE) ENABLED\b/;
-const NEUTRALISED = /\b(DRS|OVERTAKE) DISABLED\b|(?<!VIRTUAL )SAFETY CAR DEPLOYED|RED FLAG/;
+// Messages about a single DRS zone ("DRS ENABLED IN ZONE 2") come from pre-race
+// tests and local yellow flags, and say nothing about the race as a whole.
+const OVERTAKING_ENABLED = /\b(DRS|OVERTAKE) ENABLED\b(?! IN ZONE)/;
+const NEUTRALISED = /\b(DRS|OVERTAKE) DISABLED\b(?! IN ZONE)|(?<!VIRTUAL )SAFETY CAR DEPLOYED|\bRED FLAG\b/;
+const SAFETY_CAR_IN = /\bSAFETY CAR IN THIS LAP\b/;
+const CHEQUERED_FLAG = /\bCHEQUERED FLAG\b/;
 const VSC_DEPLOYED = /\b(VSC|VIRTUAL SAFETY CAR) DEPLOYED\b/;
 const VSC_ENDING = /\b(VSC|VIRTUAL SAFETY CAR) ENDING\b/;
 // After "VSC ENDING" drivers still need a few seconds to get back up to speed.
 const VSC_RESUME_MS = 15_000;
+// After "SAFETY CAR IN THIS LAP" racing restarts when the leader next crosses the line.
+// Only used when overtaking is never re-enabled, which is what normally ends the period.
+const SAFETY_CAR_RESTART_MS = 120_000;
 // A pit stop reshuffles the order without anyone fighting for it.
 const PIT_MARGIN_MS = 20_000;
 const DEFAULT_PIT_LANE_S = 30;
@@ -124,15 +131,24 @@ export function neutralisedWindows(raceControl: RaceControl[]): Window[] {
   const windows: Window[] = [];
   // Until overtaking is first enabled (formation lap, opening lap) the field runs nose to tail.
   let neutralSince: number | null = messages.some((m) => OVERTAKING_ENABLED.test(m.message)) ? -Infinity : null;
+  let safetyCarInAt: number | null = null;
   let vscSince: number | null = null;
+  let finishedAt = Infinity;
 
   for (const m of messages) {
     const t = Date.parse(m.date);
+    if (CHEQUERED_FLAG.test(m.message)) {
+      finishedAt = t;
+      break;
+    }
     if (NEUTRALISED.test(m.message)) {
       neutralSince ??= t;
     } else if (OVERTAKING_ENABLED.test(m.message) && neutralSince !== null) {
       windows.push({ from: neutralSince, to: t });
       neutralSince = null;
+      safetyCarInAt = null;
+    } else if (SAFETY_CAR_IN.test(m.message) && neutralSince !== null) {
+      safetyCarInAt = t;
     }
     if (VSC_DEPLOYED.test(m.message)) {
       vscSince ??= t;
@@ -141,9 +157,37 @@ export function neutralisedWindows(raceControl: RaceControl[]): Window[] {
       vscSince = null;
     }
   }
-  if (neutralSince !== null) windows.push({ from: neutralSince, to: Infinity });
+
+  if (neutralSince !== null) {
+    // Overtaking was never re-enabled. If the safety car came in before the finish the race
+    // restarted anyway; otherwise it finished neutralised.
+    const restart = safetyCarInAt === null ? Infinity : safetyCarInAt + SAFETY_CAR_RESTART_MS;
+    windows.push({ from: neutralSince, to: restart < finishedAt ? restart : Infinity });
+  }
   if (vscSince !== null) windows.push({ from: vscSince, to: Infinity });
+  // The race is over at the chequered flag; the cool-down lap is not racing.
+  if (finishedAt < Infinity && !windows.some((w) => w.to === Infinity)) {
+    windows.push({ from: finishedAt, to: Infinity });
+  }
   return windows;
+}
+
+// Races rarely finish with more than a few laps behind the safety car.
+const LONG_NEUTRALISATION_MS = 10 * 60_000;
+
+/**
+ * Problems in the race control data that leave the battle list incomplete, such as
+ * a neutralised period with no restart message that silently swallows the rest of the race.
+ */
+export function raceWarnings(raceControl: RaceControl[]): string[] {
+  if (raceControl.length === 0) return [];
+  const chequered = raceControl.find((m) => CHEQUERED_FLAG.test(m.message));
+  const finish = chequered ? Date.parse(chequered.date) : Math.max(...raceControl.map((m) => Date.parse(m.date)));
+  const open = neutralisedWindows(raceControl).find((w) => w.to === Infinity && w.from < finish - LONG_NEUTRALISATION_MS);
+  if (!open) return [];
+
+  const since = Number.isFinite(open.from) ? `${new Date(open.from).toISOString().slice(11, 16)} UTC` : "the start";
+  return [`The race looks neutralised from ${since} to the finish with no restart message, so any battles after that are missing.`];
 }
 
 function pitWindows(pits: Pit[]): Map<number, Window[]> {
@@ -186,10 +230,11 @@ export function adjacentSamples(data: RaceData): PairSample[] {
     }
     if (typeof e.gap !== "number" || e.gap <= 0) continue;
 
+    // Position updates for two swapping cars can arrive seconds apart. Until both have,
+    // the gap may belong to a different pairing, so skip it unless both slots agree.
     const position = positionOf.get(e.driver);
-    if (position === undefined || position === 1) continue;
+    if (position === undefined || position === 1 || driverAt.get(position) !== e.driver) continue;
     const ahead = driverAt.get(position - 1);
-    // Position updates for two swapping cars arrive separately; skip until both agree.
     if (ahead === undefined || positionOf.get(ahead) !== position - 1) continue;
 
     samples.push({ t: e.t, ahead, behind: e.driver, gap: e.gap, position: position - 1 });

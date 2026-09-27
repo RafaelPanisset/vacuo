@@ -1,4 +1,4 @@
-import { findBattles, type Battle } from "./battles.ts";
+import { findBattles, raceWarnings, type Battle } from "./battles.ts";
 import type { Driver, Session } from "./openf1.ts";
 import { loadRace, parseArgs, resolveRace } from "./race.ts";
 
@@ -17,6 +17,7 @@ async function main() {
   const session = await resolveRace(query, year);
   log(`Fetching ${session.circuit_short_name} ${session.year} (session ${session.session_key})...`);
   const race = await loadRace(session);
+  for (const warning of raceWarnings(race.raceControl)) console.error(`Warning: ${warning}`);
   printBattles(session, findBattles(race).slice(0, top), race.drivers);
 }
 
