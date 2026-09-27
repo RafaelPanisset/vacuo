@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const BASE_URL = "https://api.openf1.org/v1";
@@ -78,6 +78,7 @@ export type Pit = {
 type Params = Record<string, string | number>;
 
 let lastRequestAt = 0;
+let queue: Promise<void> = Promise.resolve();
 
 /**
  * GET an OpenF1 endpoint. Responses are cached on disk when `cache` is true,
@@ -88,17 +89,35 @@ export async function get<T>(endpoint: string, params: Params, { cache = true } 
   const cachePath = join(CACHE_DIR, `${endpoint}__${query.toString().replace(/[^\w=-]/g, "_")}.json`);
 
   if (cache) {
-    const cached = await readFile(cachePath, "utf8").catch(() => null);
-    if (cached !== null) return JSON.parse(cached);
+    const cached = await readCache<T>(cachePath);
+    if (cached) return cached;
   }
 
   const data = await fetchWithRetry<T>(`${BASE_URL}/${endpoint}?${query}`);
 
-  if (cache) {
-    await mkdir(CACHE_DIR, { recursive: true });
-    await writeFile(cachePath, JSON.stringify(data));
-  }
+  // An empty result can just mean OpenF1 hasn't published the data yet, so it isn't kept.
+  if (cache && data.length > 0) await writeCache(cachePath, data);
   return data;
+}
+
+async function readCache<T>(path: string): Promise<T[] | null> {
+  const text = await readFile(path, "utf8").catch(() => null);
+  if (text === null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Unreadable (say, from an older interrupted write): fetch it again.
+    return null;
+  }
+}
+
+async function writeCache(path: string, data: unknown[]) {
+  await mkdir(CACHE_DIR, { recursive: true });
+  // Written next to the target and renamed into place, so a crash mid-write
+  // never leaves a half-written file behind.
+  const temp = `${path}.${process.pid}.tmp`;
+  await writeFile(temp, JSON.stringify(data));
+  await rename(temp, path);
 }
 
 async function fetchWithRetry<T>(url: string): Promise<T[]> {
@@ -133,10 +152,15 @@ function backoffMs(attempt: number) {
   return 2 ** attempt * 1000;
 }
 
-async function throttle() {
-  const wait = lastRequestAt + MIN_SPACING_MS - Date.now();
-  if (wait > 0) await sleep(wait);
-  lastRequestAt = Date.now();
+/** Waits for this request's turn. Calls made at the same time line up instead of going out together. */
+function throttle(): Promise<void> {
+  const turn = queue.then(async () => {
+    const wait = lastRequestAt + MIN_SPACING_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastRequestAt = Date.now();
+  });
+  queue = turn;
+  return turn;
 }
 
 function sleep(ms: number) {
