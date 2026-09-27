@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const BASE_URL = "https://api.openf1.org/v1";
@@ -77,8 +77,10 @@ export type Pit = {
 
 type Params = Record<string, string | number>;
 
-let lastRequestAt = 0;
+// No request goes out before this time; rate limits push it further back for everyone.
+let nextRequestAt = 0;
 let queue: Promise<void> = Promise.resolve();
+let tempFiles = 0;
 
 /**
  * GET an OpenF1 endpoint. Responses are cached on disk when `cache` is true,
@@ -104,20 +106,28 @@ async function readCache<T>(path: string): Promise<T[] | null> {
   const text = await readFile(path, "utf8").catch(() => null);
   if (text === null) return null;
   try {
-    return JSON.parse(text);
+    const data = JSON.parse(text);
+    // Older versions cached empty results, which may just have been published late.
+    return Array.isArray(data) && data.length > 0 ? data : null;
   } catch {
     // Unreadable (say, from an older interrupted write): fetch it again.
     return null;
   }
 }
 
+/** The cache only saves time, so failing to write it never fails the request. */
 async function writeCache(path: string, data: unknown[]) {
-  await mkdir(CACHE_DIR, { recursive: true });
   // Written next to the target and renamed into place, so a crash mid-write
   // never leaves a half-written file behind.
-  const temp = `${path}.${process.pid}.tmp`;
-  await writeFile(temp, JSON.stringify(data));
-  await rename(temp, path);
+  const temp = `${path}.${process.pid}.${++tempFiles}.tmp`;
+  try {
+    await mkdir(CACHE_DIR, { recursive: true });
+    await writeFile(temp, JSON.stringify(data));
+    await rename(temp, path);
+  } catch (err) {
+    await rm(temp, { force: true }).catch(() => {});
+    console.error(`Warning: could not cache ${path}: ${(err as Error).message}`);
+  }
 }
 
 async function fetchWithRetry<T>(url: string): Promise<T[]> {
@@ -131,7 +141,7 @@ async function fetchWithRetry<T>(url: string): Promise<T[]> {
     } catch (err) {
       // Large responses sometimes get cut off mid-body ("terminated"); that's worth retrying.
       if (attempt === MAX_ATTEMPTS) throw err;
-      await sleep(backoffMs(attempt));
+      holdRequests(backoffMs(attempt));
       continue;
     }
 
@@ -144,8 +154,13 @@ async function fetchWithRetry<T>(url: string): Promise<T[]> {
       throw new Error(`OpenF1 ${res.status} for ${url}: ${body}`);
     }
     const retryAfter = Number(res.headers.get("retry-after"));
-    await sleep(retryAfter > 0 ? retryAfter * 1000 : backoffMs(attempt));
+    holdRequests(retryAfter > 0 ? retryAfter * 1000 : backoffMs(attempt));
   }
+}
+
+/** Keeps every request, not just the one being retried, from going out for `ms`. */
+function holdRequests(ms: number) {
+  nextRequestAt = Math.max(nextRequestAt, Date.now() + ms);
 }
 
 function backoffMs(attempt: number) {
@@ -155,9 +170,9 @@ function backoffMs(attempt: number) {
 /** Waits for this request's turn. Calls made at the same time line up instead of going out together. */
 function throttle(): Promise<void> {
   const turn = queue.then(async () => {
-    const wait = lastRequestAt + MIN_SPACING_MS - Date.now();
-    if (wait > 0) await sleep(wait);
-    lastRequestAt = Date.now();
+    // Re-check after sleeping: a rate limit may have pushed the time back meanwhile.
+    for (let wait = nextRequestAt - Date.now(); wait > 0; wait = nextRequestAt - Date.now()) await sleep(wait);
+    nextRequestAt = Date.now() + MIN_SPACING_MS;
   });
   queue = turn;
   return turn;
