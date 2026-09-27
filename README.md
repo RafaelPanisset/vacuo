@@ -63,7 +63,7 @@ npm run typecheck
 
 ## Tests
 
-`npm test` runs 17 tests with Node's built-in test runner. They cover battle detection (thresholds, hysteresis, safety cars, VSC, pit stops, overtakes) and clip window selection, using small synthetic races.
+`npm test` runs 34 tests with Node's built-in test runner, using small synthetic races and a fake `fetch`, so no network is needed. They cover battle detection (thresholds, hysteresis, safety cars, VSC, red and chequered flags, pit stops, overtakes), clip window selection and frame timing, and the OpenF1 client's cache and rate limiting.
 
 ## Stack
 
