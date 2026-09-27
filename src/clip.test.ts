@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Battle, PairSample } from "./battles.ts";
-import { clipWindow } from "./clip.ts";
+import { buildClip, clipWindow } from "./clip.ts";
+import type { Location } from "./openf1.ts";
+import type { Race } from "./race.ts";
 
 const A = 1;
 const B = 2;
@@ -56,5 +58,33 @@ describe("clipWindow", () => {
   it("never reaches outside the battle", () => {
     const window = clipWindow(battle(30 * MINUTE, [MINUTE / 2]));
     assert.equal(window.from, 0);
+  });
+});
+
+describe("buildClip", () => {
+  it("puts each car where it was at the end of the window on the last action frame", () => {
+    const b = battle(3 * MINUTE, [MINUTE]);
+    const window = clipWindow(b);
+    // A car driving along x at one unit per second, sampled every 250ms.
+    const path: Location[] = [];
+    for (let t = window.from - 2_000; t <= window.to + 2_000; t += 250) {
+      path.push({ date: new Date(t).toISOString(), driver_number: A, x: t / 1000, y: 0, z: 0 });
+    }
+    const race: Race = {
+      session: { session_key: 1, session_name: "Race", date_start: "", date_end: "", location: "", country_name: "", circuit_short_name: "Test", year: 2026 },
+      drivers: new Map(),
+      final: true,
+      intervals: [],
+      positions: [],
+      laps: [],
+      raceControl: [],
+      pits: [],
+    };
+
+    const clip = buildClip(race, b, window, path, [path, path]);
+
+    // The track spans x = -2..182, so the end of the window (x = 180) projects to 182/184.
+    const [x] = clip.cars[0][clip.actionFrames - 1];
+    assert.ok(Math.abs(x - 182 / 184) < 1e-4, `last frame is at x=${x}, expected ${182 / 184}`);
   });
 });

@@ -2,6 +2,7 @@ import type { Battle } from "./battles.ts";
 import { get, type Lap, type Location } from "./openf1.ts";
 import type { Race } from "./race.ts";
 import type { ClipDriver, ClipProps, Point } from "./video/props.ts";
+import { actionFrameToRaceSeconds } from "./video/timing.ts";
 
 export const FPS = 30;
 const ACTION_S = 27;
@@ -64,7 +65,8 @@ export function clipWindow(battle: Battle): Window {
 }
 
 export function buildClip(race: Race, battle: Battle, window: Window, outline: Location[], cars: [Location[], Location[]]): ClipProps {
-  const speed = (window.to - window.from) / 1000 / ACTION_S;
+  const durationS = (window.to - window.from) / 1000;
+  const speed = durationS / ACTION_S;
   const actionFrames = ACTION_S * FPS;
   const track = onTrack(outline);
   const project = projection(track.length > 0 ? track : onTrack([...cars[0], ...cars[1]]));
@@ -72,7 +74,9 @@ export function buildClip(race: Race, battle: Battle, window: Window, outline: L
 
   const carFrames = cars.map((locations) => {
     const at = interpolator(onTrack(locations));
-    return Array.from({ length: actionFrames }, (_, frame) => project(at(window.from + (frame / FPS) * speed * 1000)));
+    return Array.from({ length: actionFrames }, (_, frame) =>
+      project(at(window.from + actionFrameToRaceSeconds(frame, actionFrames, durationS) * 1000)),
+    );
   }) as [Point[], Point[]];
 
   const inWindow = battle.samples.filter((s) => s.t >= window.from && s.t <= window.to);
@@ -90,6 +94,7 @@ export function buildClip(race: Race, battle: Battle, window: Window, outline: L
     actionFrames,
     holdFrames: HOLD_S * FPS,
     speed: round(speed),
+    durationS,
     drivers: battle.drivers.map((n) => clipDriver(race, n)) as [ClipDriver, ClipDriver],
     track: track.map(project),
     cars: carFrames,

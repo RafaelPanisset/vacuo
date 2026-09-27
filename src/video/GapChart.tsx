@@ -15,7 +15,7 @@ const LABEL_WIDTH = 64;
 /** The gap between the two cars over the clip, with the part still to come dimmed. */
 export function GapChart({ props, t, width, height }: Props) {
   const plotWidth = width - LABEL_WIDTH;
-  const duration = (props.actionFrames / props.fps) * props.speed;
+  const duration = props.durationS;
   const x = (seconds: number) => (seconds / duration) * plotWidth;
   const y = (gap: number) => (Math.min(gap, MAX_GAP) / MAX_GAP) * height;
   const line = props.gaps.map((g, k) => `${k === 0 ? "M" : "L"} ${x(g.t).toFixed(1)} ${(height - y(g.gap)).toFixed(1)}`).join(" ");

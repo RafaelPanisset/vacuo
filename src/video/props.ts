@@ -21,6 +21,8 @@ export type ClipProps = {
   holdFrames: number;
   /** Race seconds per video second. */
   speed: number;
+  /** Race seconds from the first action frame to the last. */
+  durationS: number;
   drivers: [ClipDriver, ClipDriver];
   track: Point[];
   /** Each driver's position at every action frame. */

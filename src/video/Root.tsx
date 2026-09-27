@@ -13,6 +13,7 @@ const empty: ClipProps = {
   actionFrames: 810,
   holdFrames: 90,
   speed: 1,
+  durationS: 27,
   drivers: [nobody, nobody],
   track: [],
   cars: [[], []],
