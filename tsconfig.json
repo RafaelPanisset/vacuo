@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "types": [
+      "node"
+    ],
+    "jsx": "react-jsx",
+    "lib": [
+      "es2024",
+      "dom",
+      "dom.iterable"
+    ],
+    "skipLibCheck": true
+  },
+  "include": [
+    "src"
+  ]
+}
